@@ -145,6 +145,87 @@ CATEGORIES = {
     },
 }
 
+WEIGHTS = {
+    "gaslighting": 3,
+    "blame_shifting": 3,
+    "triangulation": 2,
+    "passive_aggressive": 1,
+    "verbal_aggression": 2,
+}
+
+KARPMAN_RULES = {
+    "Victim": [
+        "why me",
+        "i can't",
+        "i cannot",
+        "nobody cares",
+        "no one cares",
+        "it's not fair",
+        "unfair",
+        "i'm helpless",
+        "i am helpless",
+        "you made me feel",
+        "i feel so bad",
+        "мені так погано",
+        "мене ніхто не розуміє",
+        "мені боляче",
+        "це нечесно",
+        "я не можу",
+        "я безсилий",
+        "я безсила",
+        "чому завжди я",
+    ],
+    "Persecutor": [
+        "it's your fault",
+        "its your fault",
+        "you always",
+        "you never",
+        "because of you",
+        "you made me",
+        "shut up",
+        "иди нахуй",
+        "йди нахуй",
+        "пішов нахуй",
+        "ти винен",
+        "ти винна",
+        "ти завжди",
+        "ти ніколи",
+        "ненавиджу тебе",
+        "ти тупий",
+        "ти тупа",
+    ],
+    "Rescuer": [
+        "i'll fix",
+        "i will fix",
+        "let me help",
+        "i'll help",
+        "i will help",
+        "i'll handle",
+        "i will handle",
+        "you need me",
+        "don't worry i'll",
+        "i'll do it for you",
+        "я допоможу",
+        "я все вирішу",
+        "я зроблю це за тебе",
+        "не хвилюйся я",
+        "дай я зроблю",
+    ],
+}
+
+SARCASM_HINTS = [
+    "lol",
+    "lmao",
+    "haha",
+    "хаха",
+    "ахаха",
+    "жарт",
+    "жартую",
+    "сарказм",
+    "😂",
+    "🤣",
+]
+
 
 def extract_text(text_field):
     if isinstance(text_field, str):
@@ -162,8 +243,42 @@ def extract_text(text_field):
     return ""
 
 
+UKRAINIAN_HINT_CHARS = set("аеєиіїоуюяґАЕЄИІЇОУЮЯҐ")
+
+
+def score_text_readability(text):
+    if not text:
+        return 0
+    readable = sum(1 for ch in text if ch in UKRAINIAN_HINT_CHARS)
+    broken = text.count("�")
+    return readable - broken
+
+
+def repair_garbled_text(text):
+    if not text:
+        return text
+    candidates = [text]
+    for encoding in ("latin1", "cp1251"):
+        try:
+            fixed = text.encode(encoding, errors="ignore").decode("utf-8", errors="ignore")
+            if fixed:
+                candidates.append(fixed)
+        except Exception:
+            continue
+    return max(candidates, key=score_text_readability)
+
+
+def decode_json_bytes(file_bytes):
+    for enc in ("utf-8-sig", "utf-8", "cp1251"):
+        try:
+            return file_bytes.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return file_bytes.decode("utf-8", errors="replace")
+
+
 def load_messages_from_bytes(file_bytes):
-    content = file_bytes.decode("utf-8", errors="replace")
+    content = decode_json_bytes(file_bytes)
     data = json.loads(content)
 
     messages = []
@@ -172,10 +287,11 @@ def load_messages_from_bytes(file_bytes):
             continue
         if any(key.startswith("forwarded_from") for key in item.keys()):
             continue
-        sender = item.get("from") or "Unknown"
-        text = extract_text(item.get("text", "")).strip()
+        sender = repair_garbled_text(item.get("from") or "Unknown")
+        message_id = item.get("id")
+        text = repair_garbled_text(extract_text(item.get("text", "")).strip())
         if text:
-            messages.append({"sender": sender, "text": text})
+            messages.append({"id": message_id, "sender": sender, "text": text})
 
     return messages
 
@@ -223,6 +339,58 @@ def analyze_messages(messages, ignore_verbal_aggression=False):
     return results
 
 
+def classify_karpman(text):
+    if not text:
+        return "None", 0.1, "empty"
+    text_lower = text.lower()
+    if any(hint in text_lower for hint in SARCASM_HINTS):
+        return "None", 0.2, "sarcasm or joke"
+
+    scores = {}
+    for role, keywords in KARPMAN_RULES.items():
+        scores[role] = sum(1 for k in keywords if k in text_lower)
+
+    top_role = max(scores, key=scores.get)
+    top_score = scores[top_role]
+    if top_score == 0:
+        return "None", 0.2, "no clear role cues"
+
+    ties = [role for role, score in scores.items() if score == top_score]
+    if len(ties) > 1:
+        return "None", 0.3, "mixed signals"
+
+    confidence = min(0.9, 0.5 + (0.1 * top_score))
+    reasons = {
+        "Victim": "self-pity or helplessness",
+        "Persecutor": "blame or attack language",
+        "Rescuer": "unsolicited help or fixing",
+    }
+    return top_role, confidence, reasons.get(top_role, "pattern match")
+
+
+def build_karpman_items(messages):
+    items = []
+    counts = {"Victim": 0, "Persecutor": 0, "Rescuer": 0, "None": 0}
+    by_sender = {}
+    for msg in messages:
+        role, confidence, reason = classify_karpman(msg["text"])
+        sender = msg.get("sender", "Unknown")
+        counts[role] = counts.get(role, 0) + 1
+        sender_roles = by_sender.setdefault(
+            sender, {"Victim": 0, "Persecutor": 0, "Rescuer": 0, "None": 0}
+        )
+        sender_roles[role] = sender_roles.get(role, 0) + 1
+        items.append(
+            {
+                "id": msg.get("id"),
+                "role": role,
+                "confidence": round(confidence, 2),
+                "reason": reason[:60],
+            }
+        )
+    return items, counts, by_sender
+
+
 def compute_participants(messages):
     counts = {}
     for msg in messages:
@@ -234,6 +402,7 @@ def compute_participants(messages):
 
 def build_report(file_name, messages, results, ignore_verbal_aggression=False):
     participants, message_counts = compute_participants(messages)
+    karpman_items, karpman_counts, karpman_by_sender = build_karpman_items(messages)
     return {
         "title": "Project Mirror MVP - Telegram JSON Scan",
         "input_file": file_name,
@@ -241,6 +410,11 @@ def build_report(file_name, messages, results, ignore_verbal_aggression=False):
         "categories": results,
         "participants": participants,
         "message_counts": message_counts,
+        "karpman": {
+            "items": karpman_items,
+            "counts": karpman_counts,
+            "by_sender": karpman_by_sender,
+        },
         "options": {
             "ignore_verbal_aggression": ignore_verbal_aggression,
         },
@@ -308,6 +482,23 @@ def compute_sender_totals(categories):
     return totals
 
 
+def compute_weighted_scores(categories, message_counts, ignore_verbal_aggression=False):
+    weighted = {}
+    for key, data in categories.items():
+        weight = WEIGHTS.get(key, 1)
+        if ignore_verbal_aggression and key == "verbal_aggression":
+            weight = 0
+        for sender, count in data.get("by_sender", {}).items():
+            entry = weighted.setdefault(sender, {"weighted_sum": 0, "rate_per_100": 0})
+            entry["weighted_sum"] += count * weight
+
+    for sender, entry in weighted.items():
+        total_msgs = message_counts.get(sender, 0)
+        entry["rate_per_100"] = (entry["weighted_sum"] / total_msgs) * 100 if total_msgs else 0
+
+    return weighted
+
+
 if st.session_state.page == "upload":
     ignore_swears = st.checkbox(
         "We frequently use swear words and I DO NOT count it as offence",
@@ -342,19 +533,34 @@ elif st.session_state.page == "summary":
     st.subheader("Summary")
     st.write(f"Messages parsed: {report['messages_parsed']}")
 
-    most_sender, most_count = decide_most_manipulative(report["categories"])
+    ignore_verbal = report.get("options", {}).get("ignore_verbal_aggression", False)
     sender_totals = compute_sender_totals(report["categories"])
-    total_flags = sum(sender_totals.values())
-    if most_sender:
-        st.success(f"Most manipulative (by flagged messages): {most_sender} ({most_count})")
+    weighted_scores = compute_weighted_scores(
+        report["categories"],
+        report.get("message_counts", {}),
+        ignore_verbal_aggression=ignore_verbal,
+    )
+
+    top_sender = None
+    top_weight = 0
+    top_rate = 0
+    if weighted_scores:
+        top_sender, top_data = max(weighted_scores.items(), key=lambda item: item[1]["weighted_sum"])
+        top_weight = top_data["weighted_sum"]
+        top_rate = top_data["rate_per_100"]
+
+    if top_sender:
+        st.success(
+            f"Top flagged sender (severity-weighted): {top_sender} — {top_weight} pts ({top_rate:.1f} / 100 msgs)"
+        )
         participants = report.get("participants", [])
-        second_sender = next((p for p in participants if p != most_sender), None)
-        second_count = sender_totals.get(second_sender, 0) if second_sender else 0
-        combined = most_count + second_count
-        share = round((most_count / combined) * 100) if combined else 0
-        other_share = max(0, 100 - share)
+        second_sender = next((p for p in participants if p != top_sender), None)
         second_label = second_sender or "Second participant"
-        st.write(f"Manipulation share: {share}% — {most_sender} vs {second_label} {other_share}%")
+        second_weight = weighted_scores.get(second_sender, {}).get("weighted_sum", 0)
+        combined = top_weight + second_weight
+        share = round((top_weight / combined) * 100) if combined else 0
+        other_share = max(0, 100 - share)
+        st.write(f"Manipulation share: {share}% — {top_sender} vs {second_label} {other_share}%")
         st.markdown(
             f"""
             <div style="width: 100%; height: 16px; background: #2a2f45; border-radius: 999px; overflow: hidden;">
@@ -381,9 +587,9 @@ elif st.session_state.page == "summary":
         reverse=True,
     )
     top_notes = [category_notes[key] for key, count in sorted_categories if count > 0][:2]
-    if most_sender and top_notes:
+    if top_sender and top_notes:
         st.write(
-            f"In this dialogue, {most_sender} shows more patterns of {', '.join(top_notes)}. "
+            f"In this dialogue, {top_sender} shows more patterns of {', '.join(top_notes)}. "
             "This is based on keyword matches only, not a diagnosis."
         )
     elif any(count > 0 for _, count in sorted_categories):
@@ -393,6 +599,28 @@ elif st.session_state.page == "summary":
         )
     else:
         st.write("No manipulation keywords detected in this chat.")
+
+    st.markdown("### Karpman Drama Triangle")
+    karpman_counts = report.get("karpman", {}).get("counts", {})
+    karpman_by_sender = report.get("karpman", {}).get("by_sender", {})
+    st.write(
+        f"Victim: {karpman_counts.get('Victim', 0)} • "
+        f"Persecutor: {karpman_counts.get('Persecutor', 0)} • "
+        f"Rescuer: {karpman_counts.get('Rescuer', 0)} • "
+        f"None: {karpman_counts.get('None', 0)}"
+    )
+    if karpman_by_sender:
+        for sender, roles in karpman_by_sender.items():
+            ranked = sorted(
+                ((role, count) for role, count in roles.items() if role != "None"),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            if ranked and ranked[0][1] > 0:
+                top_role, top_count = ranked[0]
+                st.write(f"{sender} might be **{top_role}** ({top_count} messages).")
+            else:
+                st.write(f"{sender}: no clear Karpman role detected.")
 
     for key, info in CATEGORIES.items():
         label = info["label"]
