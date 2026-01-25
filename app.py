@@ -170,6 +170,8 @@ def load_messages_from_bytes(file_bytes):
     for item in data.get("messages", []):
         if item.get("type") != "message":
             continue
+        if any(key.startswith("forwarded_from") for key in item.keys()):
+            continue
         sender = item.get("from") or "Unknown"
         text = extract_text(item.get("text", "")).strip()
         if text:
@@ -221,12 +223,24 @@ def analyze_messages(messages, ignore_verbal_aggression=False):
     return results
 
 
+def compute_participants(messages):
+    counts = {}
+    for msg in messages:
+        sender = msg["sender"]
+        counts[sender] = counts.get(sender, 0) + 1
+    participants = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return [name for name, _ in participants], counts
+
+
 def build_report(file_name, messages, results, ignore_verbal_aggression=False):
+    participants, message_counts = compute_participants(messages)
     return {
         "title": "Project Mirror MVP - Telegram JSON Scan",
         "input_file": file_name,
         "messages_parsed": len(messages),
         "categories": results,
+        "participants": participants,
+        "message_counts": message_counts,
         "options": {
             "ignore_verbal_aggression": ignore_verbal_aggression,
         },
@@ -333,9 +347,14 @@ elif st.session_state.page == "summary":
     total_flags = sum(sender_totals.values())
     if most_sender:
         st.success(f"Most manipulative (by flagged messages): {most_sender} ({most_count})")
-        share = round((most_count / total_flags) * 100) if total_flags else 0
+        participants = report.get("participants", [])
+        second_sender = next((p for p in participants if p != most_sender), None)
+        second_count = sender_totals.get(second_sender, 0) if second_sender else 0
+        combined = most_count + second_count
+        share = round((most_count / combined) * 100) if combined else 0
         other_share = max(0, 100 - share)
-        st.write(f"Manipulation share: {share}% — {most_sender} vs Others {other_share}%")
+        second_label = second_sender or "Second participant"
+        st.write(f"Manipulation share: {share}% — {most_sender} vs {second_label} {other_share}%")
         st.markdown(
             f"""
             <div style="width: 100%; height: 16px; background: #2a2f45; border-radius: 999px; overflow: hidden;">
