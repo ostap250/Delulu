@@ -1,0 +1,74 @@
+﻿{
+  "items": [
+    {
+      "id": "1",
+      "text": "You are imagining things. That never happened.",
+      "sender": "Alex",
+      "expected_categories": ["gaslighting"],
+      "expected_karpman": "Persecutor"
+    },
+    {
+      "id": "2",
+      "text": "It's your fault this happened.",
+      "sender": "Sam",
+      "expected_categories": ["blame_shifting"],
+      "expected_karpman": "Persecutor"
+    },
+    {
+      "id": "3",
+      "text": "Whatever you want. I'm fine.",
+      "sender": "Alex",
+      "expected_categories": ["passive_aggressive"],
+      "expected_karpman": "None"
+    },
+    {
+      "id": "4",
+      "text": "Everyone thinks you're wrong.",
+      "sender": "Sam",
+      "expected_categories": ["triangulation"],
+      "expected_karpman": "Persecutor"
+    },
+    {
+      "id": "5",
+      "text": "Fuck you. Go to hell.",
+      "sender": "Alex",
+      "expected_categories": ["verbal_aggression"],
+      "expected_karpman": "Persecutor"
+    },
+    {
+      "id": "6",
+      "text": "I can't do this anymore. It's not fair.",
+      "sender": "Sam",
+      "expected_categories": [],
+      "expected_karpman": "Victim"
+    },
+    {
+      "id": "7",
+      "text": "I'll fix it for you, don't worry.",
+      "sender": "Alex",
+      "expected_categories": [],
+      "expected_karpman": "Rescuer"
+    },
+    {
+      "id": "8",
+      "text": "lol sure",
+      "sender": "Sam",
+      "expected_categories": [],
+      "expected_karpman": "None"
+    },
+    {
+      "id": "9",
+      "text": "Ти перебільшуєш. Такого не було.",
+      "sender": "Alex",
+      "expected_categories": ["gaslighting"],
+      "expected_karpman": "Persecutor"
+    },
+    {
+      "id": "10",
+      "text": "Я допоможу, я все вирішу.",
+      "sender": "Sam",
+      "expected_categories": [],
+      "expected_karpman": "Rescuer"
+    }
+  ]
+}

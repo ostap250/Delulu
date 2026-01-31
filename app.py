@@ -1,6 +1,8 @@
 ﻿import json
 import streamlit as st
 
+from rules.context_window import apply_context_window_boost
+
 CATEGORIES = {
     "gaslighting": {
         "label": "Gaslighting",
@@ -153,6 +155,14 @@ WEIGHTS = {
     "verbal_aggression": 2,
 }
 
+BASE_SEVERITY = {
+    "gaslighting": 5,
+    "blame_shifting": 4,
+    "triangulation": 3,
+    "passive_aggressive": 2,
+    "verbal_aggression": 4,
+}
+
 KARPMAN_RULES = {
     "Victim": [
         "why me",
@@ -296,11 +306,8 @@ def load_messages_from_bytes(file_bytes):
     return messages
 
 
-def analyze_messages(messages, ignore_verbal_aggression=False):
-    results = {}
-    for key in CATEGORIES:
-        results[key] = {"total": 0, "by_sender": {}, "examples": []}
-
+def predict_messages(messages, ignore_verbal_aggression=False):
+    predictions = {}
     prev_sender = None
     prev_text = ""
 
@@ -308,6 +315,9 @@ def analyze_messages(messages, ignore_verbal_aggression=False):
         sender = msg["sender"]
         text = msg["text"]
         text_lower = text.lower().strip()
+        categories = []
+        severity = {}
+        metadata = {}
 
         for key, category in CATEGORIES.items():
             if ignore_verbal_aggression and key == "verbal_aggression":
@@ -327,14 +337,40 @@ def analyze_messages(messages, ignore_verbal_aggression=False):
                     matched = True
 
             if matched:
-                results[key]["total"] += 1
-                results[key]["by_sender"][sender] = results[key]["by_sender"].get(sender, 0) + 1
-                limit = category.get("example_limit", 3)
-                if len(results[key]["examples"]) < limit:
-                    results[key]["examples"].append({"sender": sender, "text": text})
+                categories.append(key)
+                severity[key] = BASE_SEVERITY.get(key, 3)
+
+        karpman_role, _, _ = classify_karpman(text)
+        predictions[msg.get("id")] = {
+            "categories": categories,
+            "karpman": karpman_role,
+            "severity": severity,
+            "metadata": metadata,
+        }
 
         prev_sender = sender
         prev_text = text
+
+    return apply_context_window_boost(messages, predictions)
+
+
+
+def analyze_messages(messages, ignore_verbal_aggression=False):
+    results = {key: {"total": 0, "by_sender": {}, "examples": []} for key in CATEGORIES}
+    predictions = predict_messages(messages, ignore_verbal_aggression=ignore_verbal_aggression)
+
+    for msg in messages:
+        sender = msg["sender"]
+        text = msg["text"]
+        message_id = msg.get("id")
+        pred = predictions.get(message_id, {"categories": []})
+
+        for key in pred["categories"]:
+            results[key]["total"] += 1
+            results[key]["by_sender"][sender] = results[key]["by_sender"].get(sender, 0) + 1
+            limit = CATEGORIES[key].get("example_limit", 3)
+            if len(results[key]["examples"]) < limit:
+                results[key]["examples"].append({"sender": sender, "text": text})
 
     return results
 
