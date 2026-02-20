@@ -1,5 +1,6 @@
 ﻿import json
 import streamlit as st
+import streamlit.components.v1 as components
 
 from rules.context_window import apply_context_window_boost
 
@@ -291,6 +292,26 @@ def load_messages_from_bytes(file_bytes):
     content = decode_json_bytes(file_bytes)
     data = json.loads(content)
 
+def get_demo_messages():
+    return [
+        {"id": "1", "sender": "You", "text": "Hey, yesterday when you canceled last minute, it kind of hurt."},
+        {"id": "2", "sender": "Alex", "text": "You're overreacting, it was just a small thing."},
+        {"id": "3", "sender": "You", "text": "I just wanted a bit of notice."},
+        {"id": "4", "sender": "Alex", "text": "You're too sensitive. Anyone else would be fine with it."},
+        {"id": "5", "sender": "You", "text": "It happens pretty often though."},
+        {"id": "6", "sender": "Alex", "text": "That never happened. You're remembering it wrong."},
+        {"id": "7", "sender": "You", "text": "It did, last week too."},
+        {"id": "8", "sender": "Alex", "text": "Wow, okay. If I'm such a bad person, maybe I should just stop trying."},
+        {"id": "9", "sender": "You", "text": "That's not what I said."},
+        {"id": "10", "sender": "Alex", "text": "Whatever. Do what you want."},
+        {"id": "11", "sender": "You", "text": "I just want us to communicate better."},
+        {"id": "12", "sender": "Alex", "text": "My ex never complained this much."},
+        {"id": "13", "sender": "You", "text": "That feels unfair to compare."},
+        {"id": "14", "sender": "Alex", "text": "Calm down. You're making drama out of nothing."},
+        {"id": "15", "sender": "You", "text": "I'm not trying to fight."}
+    ]
+
+
     messages = []
     for item in data.get("messages", []):
         if item.get("type") != "message":
@@ -331,7 +352,7 @@ def predict_messages(messages, ignore_verbal_aggression=False):
             if key == "passive_aggressive" and not matched:
                 acronyms = category.get("dismissive_acronyms", [])
                 is_short = len(text_lower) <= 6
-                is_acronym = text_lower.strip(".!?") in acronyms
+                is_acronym = text_lower.strip(".!OK") in acronyms
                 previous_context = prev_sender is not None and prev_sender != sender and len(prev_text) >= 20
                 if is_short and is_acronym and previous_context:
                     matched = True
@@ -457,7 +478,7 @@ def build_report(file_name, messages, results, ignore_verbal_aggression=False):
     }
 
 
-st.set_page_config(page_title="Am i Delulu?", layout="centered")
+st.set_page_config(page_title="Am i DeluluOK", layout="centered")
 
 st.markdown(
     """
@@ -485,7 +506,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("Am i Delulu?")
+st.title("Am i DeluluOK")
 st.write("Upload Telegram JSON export (result.json) to scan for basic manipulation phrases.")
 
 if "page" not in st.session_state:
@@ -528,9 +549,35 @@ def compute_weighted_scores(categories, message_counts, ignore_verbal_aggression
             entry = weighted.setdefault(sender, {"weighted_sum": 0, "rate_per_100": 0})
             entry["weighted_sum"] += count * weight
 
-    for sender, entry in weighted.items():
-        total_msgs = message_counts.get(sender, 0)
-        entry["rate_per_100"] = (entry["weighted_sum"] / total_msgs) * 100 if total_msgs else 0
+def render_copy_button(text: str, key: str):
+    safe = json.dumps(text)
+    html = f"""
+    <div style="display:flex; flex-direction:column; gap:6px;">
+      <button id="copy-btn-{key}" style="
+          background:#2a2f45; color:#e8ecff; border:1px solid #3a4060;
+          padding:8px 12px; border-radius:8px; cursor:pointer;">
+        ?? Copy summary
+      </button>
+      <div id="copy-status-{key}" style="color:#bcd1ff; font-size:0.9rem;"></div>
+    </div>
+    <script>
+      const btn = document.getElementById("copy-btn-{key}");
+      const status = document.getElementById("copy-status-{key}");
+      btn.addEventListener("click", () => {{
+        const text = {safe};
+        navigator.clipboard.writeText(text).then(() => {{
+          status.textContent = "Copied ?";
+        }}).catch(() => {{
+          status.textContent = "Copy failed ? open Manual copy below.";
+        }});
+      }});
+    </script>
+    """
+    # JS runs client-side; Streamlit can't receive clipboard status directly here.
+    components.html(html, height=70)
+    return None
+
+
 
     return weighted
 
@@ -540,6 +587,16 @@ if st.session_state.page == "upload":
         "We frequently use swear words and I DO NOT count it as offence",
         value=False,
     )
+    st.caption("Demo includes examples of gaslighting, blame-shifting, triangulation and passive-aggressive responses.")
+    if st.button("✨ Try Demo Example"):
+        demo_messages = get_demo_messages()
+        results = analyze_messages(demo_messages, ignore_verbal_aggression=ignore_swears)
+        report = build_report("demo", demo_messages, results, ignore_verbal_aggression=ignore_swears)
+        st.session_state.report = report
+        st.session_state.page = "summary"
+        if hasattr(st, "rerun"):
+            st.rerun()
+
     uploaded_file = st.file_uploader("Upload result.json", type=["json"])
 
     if not uploaded_file:
@@ -624,19 +681,65 @@ elif st.session_state.page == "summary":
     )
     top_notes = [category_notes[key] for key, count in sorted_categories if count > 0][:2]
     if top_sender and top_notes:
-        st.write(
+        overview_text = (
             f"In this dialogue, {top_sender} shows more patterns of {', '.join(top_notes)}. "
             "This is based on keyword matches only, not a diagnosis."
         )
     elif any(count > 0 for _, count in sorted_categories):
-        st.write(
+        overview_text = (
             "Some manipulation-related keywords appear in the chat, but no single person stands out clearly. "
             "This is based on keyword matches only, not a diagnosis."
         )
     else:
-        st.write("No manipulation keywords detected in this chat.")
+        overview_text = "No manipulation keywords detected in this chat."
+
+    st.write(overview_text)
+    karpman_by_sender = report.get("karpman", {}).get("by_sender", {})
+
+
+
+    summary_lines = []
+    if top_sender:
+        summary_lines.append(
+            f"Top flagged sender (severity-weighted): {top_sender} - {top_weight} pts ({top_rate:.1f} / 100 msgs)"
+        )
+    else:
+        summary_lines.append("Top flagged sender: none")
+
+    summary_lines.append("\nCategory counts by sender:")
+    for key, info in CATEGORIES.items():
+        label = info["label"]
+        data = report["categories"][key]
+        if not data["by_sender"]:
+            summary_lines.append(f"- {label}: none")
+            continue
+        compact = ", ".join(f"{sender}={count}" for sender, count in data["by_sender"].items())
+        summary_lines.append(f"- {label}: {compact}")
+
+    summary_lines.append("\nKarpman roles by sender:")
+    if karpman_by_sender:
+        for sender, roles in karpman_by_sender.items():
+            compact = ", ".join(f"{role}={count}" for role, count in roles.items())
+            summary_lines.append(f"- {sender}: {compact}")
+    else:
+        summary_lines.append("- none")
+
+    summary_lines.append("\nOverview:")
+    summary_lines.append(overview_text)
+    summary_text = "\n".join(summary_lines)
+    render_copy_button(summary_text, key="summary")
+
+    with st.expander("🧾 Manual copy (click if you don't see Copied ✅)", expanded=False):
+        lines = [line.strip() for line in summary_text.split("\n") if line.strip()]
+        if lines:
+            st.markdown("\n".join(f"- {line}" for line in lines))
+        else:
+            st.markdown("- (empty summary)")
+        st.text_area("Summary (select all + copy)", summary_text, height=220)
 
     st.markdown("### Karpman Drama Triangle")
+    karpman_by_sender = report.get("karpman", {}).get("by_sender", {})
+
     karpman_counts = report.get("karpman", {}).get("counts", {})
     karpman_by_sender = report.get("karpman", {}).get("by_sender", {})
     st.write(
