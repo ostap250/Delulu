@@ -1,6 +1,7 @@
 ﻿import json
 import streamlit as st
 import streamlit.components.v1 as components
+from datetime import datetime, timedelta
 
 from rules.context_window import apply_context_window_boost
 
@@ -287,30 +288,96 @@ def decode_json_bytes(file_bytes):
             continue
     return file_bytes.decode("utf-8", errors="replace")
 
+def parse_datetime(value):
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value)
+        except Exception:
+            return None
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            try:
+                return datetime.fromtimestamp(int(raw))
+            except Exception:
+                return None
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    return None
+
+
+def compute_flag_timeline_stats(messages_with_preds):
+    entries = []
+    for item in messages_with_preds:
+        dt = item.get("dt")
+        if isinstance(dt, str):
+            dt = parse_datetime(dt)
+        if not dt:
+            continue
+        flagged = bool(item.get("categories")) or item.get("karpman") != "None"
+        entries.append({"dt": dt, "flagged": flagged})
+
+    if not entries:
+        return {
+            "first_flagged_dt": None,
+            "last_flagged_dt": None,
+            "longest_streak": 0,
+            "max_24h_count": 0,
+            "max_24h_start": None,
+            "max_24h_end": None,
+        }
+
+    entries.sort(key=lambda x: x["dt"])
+
+    first_flagged = None
+    last_flagged = None
+    longest_streak = 0
+    current_streak = 0
+
+    for entry in entries:
+        if entry["flagged"]:
+            if first_flagged is None:
+                first_flagged = entry["dt"]
+            last_flagged = entry["dt"]
+            current_streak += 1
+            longest_streak = max(longest_streak, current_streak)
+        else:
+            current_streak = 0
+
+    flagged_times = [e["dt"] for e in entries if e["flagged"]]
+    max_24h_count = 0
+    max_start = None
+    max_end = None
+    left = 0
+    for right, dt in enumerate(flagged_times):
+        while flagged_times[left] + timedelta(hours=24) < dt:
+            left += 1
+        count = right - left + 1
+        if count > max_24h_count:
+            max_24h_count = count
+            max_start = flagged_times[left]
+            max_end = dt
+
+    return {
+        "first_flagged_dt": first_flagged,
+        "last_flagged_dt": last_flagged,
+        "longest_streak": longest_streak,
+        "max_24h_count": max_24h_count,
+        "max_24h_start": max_start,
+        "max_24h_end": max_end,
+    }
+
+
 
 def load_messages_from_bytes(file_bytes):
     content = decode_json_bytes(file_bytes)
     data = json.loads(content)
-
-def get_demo_messages():
-    return [
-        {"id": "1", "sender": "You", "text": "Hey, yesterday when you canceled last minute, it kind of hurt."},
-        {"id": "2", "sender": "Alex", "text": "You're overreacting, it was just a small thing."},
-        {"id": "3", "sender": "You", "text": "I just wanted a bit of notice."},
-        {"id": "4", "sender": "Alex", "text": "You're too sensitive. Anyone else would be fine with it."},
-        {"id": "5", "sender": "You", "text": "It happens pretty often though."},
-        {"id": "6", "sender": "Alex", "text": "That never happened. You're remembering it wrong."},
-        {"id": "7", "sender": "You", "text": "It did, last week too."},
-        {"id": "8", "sender": "Alex", "text": "Wow, okay. If I'm such a bad person, maybe I should just stop trying."},
-        {"id": "9", "sender": "You", "text": "That's not what I said."},
-        {"id": "10", "sender": "Alex", "text": "Whatever. Do what you want."},
-        {"id": "11", "sender": "You", "text": "I just want us to communicate better."},
-        {"id": "12", "sender": "Alex", "text": "My ex never complained this much."},
-        {"id": "13", "sender": "You", "text": "That feels unfair to compare."},
-        {"id": "14", "sender": "Alex", "text": "Calm down. You're making drama out of nothing."},
-        {"id": "15", "sender": "You", "text": "I'm not trying to fight."}
-    ]
-
 
     messages = []
     for item in data.get("messages", []):
@@ -319,15 +386,41 @@ def get_demo_messages():
         if any(key.startswith("forwarded_from") for key in item.keys()):
             continue
         sender = repair_garbled_text(item.get("from") or "Unknown")
-        message_id = item.get("id")
+        message_id = str(item.get("id")) if item.get("id") is not None else None
         text = repair_garbled_text(extract_text(item.get("text", "")).strip())
+        dt_value = item.get("date") or item.get("date_unixtime")
+        dt = parse_datetime(dt_value)
         if text:
-            messages.append({"id": message_id, "sender": sender, "text": text})
+            messages.append({"id": message_id, "sender": sender, "text": text, "dt": dt})
 
     return messages
 
 
+def get_demo_messages():
+    return [
+        {"id": "1", "sender": "You", "text": "Hey, yesterday when you canceled last minute, it kind of hurt.", "dt": "2026-01-01T10:00:00"},
+        {"id": "2", "sender": "Alex", "text": "You're overreacting, it was just a small thing.", "dt": "2026-01-01T10:01:00"},
+        {"id": "3", "sender": "You", "text": "I just wanted a bit of notice.", "dt": "2026-01-01T10:02:00"},
+        {"id": "4", "sender": "Alex", "text": "You're too sensitive. Anyone else would be fine with it.", "dt": "2026-01-01T10:03:00"},
+        {"id": "5", "sender": "You", "text": "It happens pretty often though.", "dt": "2026-01-01T10:04:00"},
+        {"id": "6", "sender": "Alex", "text": "That never happened. You're remembering it wrong.", "dt": "2026-01-01T10:05:00"},
+        {"id": "7", "sender": "You", "text": "It did, last week too.", "dt": "2026-01-01T10:06:00"},
+        {"id": "8", "sender": "Alex", "text": "Wow, okay. If I'm such a bad person, maybe I should just stop trying.", "dt": "2026-01-01T10:07:00"},
+        {"id": "9", "sender": "You", "text": "That's not what I said.", "dt": "2026-01-01T10:08:00"},
+        {"id": "10", "sender": "Alex", "text": "Whatever. Do what you want.", "dt": "2026-01-01T10:09:00"},
+        {"id": "11", "sender": "You", "text": "I just want us to communicate better.", "dt": "2026-01-01T10:10:00"},
+        {"id": "12", "sender": "Alex", "text": "My ex never complained this much.", "dt": "2026-01-01T10:11:00"},
+        {"id": "12b", "sender": "Alex", "text": "Everyone thinks you are overreacting.", "dt": "2026-01-01T10:11:30"},
+        {"id": "12c", "sender": "Alex", "text": "This is your fault, you made me do it.", "dt": "2026-01-01T10:11:45"},
+        {"id": "12d", "sender": "Alex", "text": "Fuck you.", "dt": "2026-01-01T10:11:55"},
+        {"id": "13", "sender": "You", "text": "That feels unfair to compare.", "dt": "2026-01-01T10:12:00"},
+        {"id": "14", "sender": "Alex", "text": "Calm down. You're making drama out of nothing.", "dt": "2026-01-01T10:13:00"},
+        {"id": "15", "sender": "You", "text": "I'm not trying to fight.", "dt": "2026-01-01T10:14:00"}
+    ]
+
+
 def predict_messages(messages, ignore_verbal_aggression=False):
+
     predictions = {}
     prev_sender = None
     prev_text = ""
@@ -483,6 +576,97 @@ st.set_page_config(page_title="Am i DeluluOK", layout="centered")
 st.markdown(
     """
     <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+
+    .custom-header {
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        height: 72px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        z-index: 999;
+        background: linear-gradient(180deg,
+          rgba(18, 24, 48, 0.90) 0%,
+          rgba(10, 14, 28, 0.55) 100%);
+        backdrop-filter: blur(10px);
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .custom-header::after {
+        content: "";
+        position: absolute;
+        left: 0; right: 0; bottom: 0;
+        height: 1px;
+        background: linear-gradient(90deg,
+          rgba(120,150,255,0.00),
+          rgba(120,150,255,0.35),
+          rgba(120,150,255,0.00));
+    }
+
+    .custom-footer {
+        position: fixed;
+        bottom: 0; left: 0; right: 0;
+        height: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 999;
+        background: linear-gradient(0deg,
+          rgba(18, 24, 48, 0.90) 0%,
+          rgba(10, 14, 28, 0.55) 100%);
+        backdrop-filter: blur(10px);
+        border-top: 1px solid rgba(255,255,255,0.06);
+        color: rgba(255,255,255,0.65);
+        font-size: 12px;
+    }
+
+    .custom-footer::before {
+        content: "";
+        position: absolute;
+        left: 0; right: 0; top: 0;
+        height: 1px;
+        background: linear-gradient(90deg,
+          rgba(120,150,255,0.00),
+          rgba(120,150,255,0.28),
+          rgba(120,150,255,0.00));
+    }
+
+    .block-container {
+        padding-top: 96px;
+        padding-bottom: 66px;
+        max-width: 980px;
+    }
+
+    .hero-card {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 18px;
+        padding: 26px 26px 18px 26px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+    }
+
+    .hero-title {
+        font-size: 54px;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        margin: 4px 0 8px 0;
+    }
+
+    .hero-subtitle {
+        font-size: 15px;
+        color: rgba(255,255,255,0.72);
+        margin-bottom: 18px;
+    }
+
+    .small-note {
+        font-size: 12px;
+        color: rgba(255,255,255,0.55);
+    }
+
     .stApp {
         background: radial-gradient(circle at 20% 20%, #1b1f3a 0%, #0b0f1f 45%, #05070d 100%);
         color: #e8ecff;
@@ -506,8 +690,24 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("Am i DeluluOK")
-st.write("Upload Telegram JSON export (result.json) to scan for basic manipulation phrases.")
+st.markdown(
+    """
+    <div class="custom-header">
+        <div style="font-size:22px; font-weight:600; color:white;">DELULU</div>
+        <div style="font-size:12px; color:#aaa;">Relationship Reality Scanner</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <div class="custom-footer">
+        Educational tool • Not a diagnosis • v0.1
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 if "page" not in st.session_state:
     st.session_state.page = "upload"
@@ -556,7 +756,7 @@ def render_copy_button(text: str, key: str):
       <button id="copy-btn-{key}" style="
           background:#2a2f45; color:#e8ecff; border:1px solid #3a4060;
           padding:8px 12px; border-radius:8px; cursor:pointer;">
-        ?? Copy summary
+        📋 Copy summary
       </button>
       <div id="copy-status-{key}" style="color:#bcd1ff; font-size:0.9rem;"></div>
     </div>
@@ -566,9 +766,9 @@ def render_copy_button(text: str, key: str):
       btn.addEventListener("click", () => {{
         const text = {safe};
         navigator.clipboard.writeText(text).then(() => {{
-          status.textContent = "Copied ?";
+          status.textContent = "Copied✅";
         }}).catch(() => {{
-          status.textContent = "Copy failed ? open Manual copy below.";
+          status.textContent = "Copy failed — open Manual copy below.";
         }});
       }});
     </script>
@@ -583,13 +783,23 @@ def render_copy_button(text: str, key: str):
 
 
 if st.session_state.page == "upload":
+    st.markdown('<div class="hero-card">', unsafe_allow_html=True)
+    st.markdown('<div class="hero-title">Am I DeluluOK</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="hero-subtitle">Upload Telegram JSON export (result.json) to scan for basic manipulation phrases.</div>',
+        unsafe_allow_html=True,
+    )
     ignore_swears = st.checkbox(
         "We frequently use swear words and I DO NOT count it as offence",
         value=False,
     )
-    st.caption("Demo includes examples of gaslighting, blame-shifting, triangulation and passive-aggressive responses.")
+    st.markdown(
+        '<div class="small-note">Demo includes examples of gaslighting, blame-shifting, triangulation and passive-aggressive responses.</div>',
+        unsafe_allow_html=True,
+    )
     if st.button("✨ Try Demo Example"):
         demo_messages = get_demo_messages()
+        st.session_state.messages = demo_messages
         results = analyze_messages(demo_messages, ignore_verbal_aggression=ignore_swears)
         report = build_report("demo", demo_messages, results, ignore_verbal_aggression=ignore_swears)
         st.session_state.report = report
@@ -604,6 +814,7 @@ if st.session_state.page == "upload":
     else:
         try:
             messages = load_messages_from_bytes(uploaded_file.getvalue())
+            st.session_state.messages = messages
         except json.JSONDecodeError:
             st.error("Invalid JSON file. Please upload a Telegram export result.json.")
             st.stop()
@@ -614,6 +825,7 @@ if st.session_state.page == "upload":
         st.session_state.page = "summary"
         if hasattr(st, "rerun"):
             st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
 elif st.session_state.page == "summary":
     report = st.session_state.report
@@ -735,7 +947,33 @@ elif st.session_state.page == "summary":
             st.markdown("\n".join(f"- {line}" for line in lines))
         else:
             st.markdown("- (empty summary)")
-        st.text_area("Summary (select all + copy)", summary_text, height=220)
+        st.text_area("", summary_text, height=220)
+
+    timeline_messages = st.session_state.get("messages", [])
+    timeline_preds = predict_messages(timeline_messages, ignore_verbal_aggression=ignore_verbal)
+    messages_with_preds = []
+    for msg in timeline_messages:
+        msg_id = msg.get("id")
+        pred = timeline_preds.get(msg_id, {"categories": [], "karpman": "None"})
+        messages_with_preds.append({
+            "dt": msg.get("dt"),
+            "categories": pred.get("categories", []),
+            "karpman": pred.get("karpman", "None"),
+        })
+
+    stats = compute_flag_timeline_stats(messages_with_preds)
+    if not stats["first_flagged_dt"]:
+        st.info("No flagged messages found, timeline stats unavailable.")
+    else:
+        st.markdown("### ⚡ Flag Density Timeline")
+        st.write(f"First flag: {stats['first_flagged_dt'].strftime('%Y-%m-%d %H:%M')}")
+        st.write(f"Last flag: {stats['last_flagged_dt'].strftime('%Y-%m-%d %H:%M')}")
+        st.write(f"Longest streak: {stats['longest_streak']} messages")
+        peak = (
+            f"{stats['max_24h_start'].strftime('%Y-%m-%d %H:%M')} → "
+            f"{stats['max_24h_end'].strftime('%Y-%m-%d %H:%M')}"
+        )
+        st.write(f"Peak 24h: {stats['max_24h_count']} flags ({peak})")
 
     st.markdown("### Karpman Drama Triangle")
     karpman_by_sender = report.get("karpman", {}).get("by_sender", {})
