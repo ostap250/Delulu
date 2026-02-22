@@ -5,6 +5,9 @@ from datetime import datetime, timedelta
 
 from rules.context_window import apply_context_window_boost
 
+if "page" not in st.session_state:
+    st.session_state.page = "scan"
+
 CATEGORIES = {
     "gaslighting": {
         "label": "Gaslighting",
@@ -667,6 +670,18 @@ st.markdown(
         color: rgba(255,255,255,0.55);
     }
 
+    .nav-link {
+        margin: 0 14px;
+        text-decoration: none;
+        color: rgba(255,255,255,0.75);
+        font-size: 14px;
+        transition: 0.2s ease;
+    }
+
+    .nav-link:hover {
+        color: white;
+    }
+
     .stApp {
         background: radial-gradient(circle at 20% 20%, #1b1f3a 0%, #0b0f1f 45%, #05070d 100%);
         color: #e8ecff;
@@ -693,8 +708,12 @@ st.markdown(
 st.markdown(
     """
     <div class="custom-header">
-        <div style="font-size:22px; font-weight:600; color:white;">DELULU</div>
-        <div style="font-size:12px; color:#aaa;">Relationship Reality Scanner</div>
+      <div style="font-size:20px;font-weight:700;color:white;">DELULU</div>
+      <div style="margin-top:6px;">
+        <a href="?page=scan" class="nav-link">Scan</a>
+        <a href="?page=contact" class="nav-link">Contact</a>
+        <a href="?page=about" class="nav-link">About</a>
+      </div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -709,10 +728,17 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if "page" not in st.session_state:
-    st.session_state.page = "upload"
+if "scan_page" not in st.session_state:
+    st.session_state.scan_page = "upload"
 if "report" not in st.session_state:
     st.session_state.report = None
+
+page = st.query_params.get("page", "scan")
+if isinstance(page, list):
+    page = page[0] if page else "scan"
+if page not in ["scan", "contact", "about"]:
+    page = "scan"
+st.session_state.page = page
 
 
 def decide_most_manipulative(categories):
@@ -782,7 +808,7 @@ def render_copy_button(text: str, key: str):
     return weighted
 
 
-if st.session_state.page == "upload":
+if st.session_state.page == "scan" and st.session_state.scan_page == "upload":
     st.markdown('<div class="hero-card">', unsafe_allow_html=True)
     st.markdown('<div class="hero-title">Am I DeluluOK</div>', unsafe_allow_html=True)
     st.markdown(
@@ -803,7 +829,7 @@ if st.session_state.page == "upload":
         results = analyze_messages(demo_messages, ignore_verbal_aggression=ignore_swears)
         report = build_report("demo", demo_messages, results, ignore_verbal_aggression=ignore_swears)
         st.session_state.report = report
-        st.session_state.page = "summary"
+        st.session_state.scan_page = "summary"
         if hasattr(st, "rerun"):
             st.rerun()
 
@@ -822,17 +848,17 @@ if st.session_state.page == "upload":
         results = analyze_messages(messages, ignore_verbal_aggression=ignore_swears)
         report = build_report(uploaded_file.name, messages, results, ignore_verbal_aggression=ignore_swears)
         st.session_state.report = report
-        st.session_state.page = "summary"
+        st.session_state.scan_page = "summary"
         if hasattr(st, "rerun"):
             st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
-elif st.session_state.page == "summary":
+elif st.session_state.page == "scan" and st.session_state.scan_page == "summary":
     report = st.session_state.report
     if not report:
         st.warning("No analysis found. Please upload a file first.")
         if st.button("Back to upload"):
-            st.session_state.page = "upload"
+            st.session_state.scan_page = "upload"
         st.stop()
 
     st.subheader("Summary")
@@ -1034,4 +1060,32 @@ elif st.session_state.page == "summary":
             st.write("Examples: none")
 
     if st.button("Back to upload"):
-        st.session_state.page = "upload"
+        st.session_state.scan_page = "upload"
+
+if st.session_state.page == "contact":
+    st.markdown("## 📩 Contact")
+    st.markdown(
+        """
+        If you have feedback, ideas, or partnership requests:
+
+        **Email:** hello@delulu.app  
+        **Instagram:** @delulu.app  
+        **Location:** Toronto, Canada  
+
+        We typically respond within 48 hours.
+        """
+    )
+elif st.session_state.page == "about":
+    st.markdown("## ℹ️ About Delulu")
+    st.markdown(
+        """
+        Delulu is a relationship reality scanner designed to help users
+        reflect on communication patterns in chat conversations.
+
+        This tool is educational only and does not provide psychological
+        diagnosis or legal advice.
+
+        Version: v0.1  
+        Built with ❤️ in 2026.
+        """
+    )
