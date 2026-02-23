@@ -613,7 +613,7 @@ st.markdown(
     .custom-footer {
         position: fixed;
         bottom: 0; left: 0; right: 0;
-        height: 44px;
+        height: 58px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -623,8 +623,10 @@ st.markdown(
           rgba(10, 14, 28, 0.55) 100%);
         backdrop-filter: blur(10px);
         border-top: 1px solid rgba(255,255,255,0.06);
-        color: rgba(255,255,255,0.65);
-        font-size: 12px;
+        color: rgba(232, 236, 255, 0.78);
+        font-size: 13px;
+        font-weight: 500;
+        letter-spacing: 0.01em;
     }
 
     .custom-footer::before {
@@ -639,8 +641,8 @@ st.markdown(
     }
 
     .block-container {
-        padding-top: 96px;
-        padding-bottom: 66px;
+        padding-top: 82px;
+        padding-bottom: 86px;
         max-width: 980px;
     }
 
@@ -670,16 +672,19 @@ st.markdown(
         color: rgba(255,255,255,0.55);
     }
 
-    .nav-link {
+    .custom-header .nav-link,
+    .custom-header .nav-link:visited,
+    .custom-header .nav-link:active {
         margin: 0 14px;
         text-decoration: none;
-        color: rgba(255,255,255,0.75);
-        font-size: 14px;
+        color: rgba(255,255,255,0.88) !important;
+        font-size: 18px;
+        font-weight: 600;
         transition: 0.2s ease;
     }
 
-    .nav-link:hover {
-        color: white;
+    .custom-header .nav-link:hover {
+        color: #ffffff !important;
     }
 
     .stApp {
@@ -710,9 +715,9 @@ st.markdown(
     <div class="custom-header">
       <div style="font-size:20px;font-weight:700;color:white;">DELULU</div>
       <div style="margin-top:6px;">
-        <a href="?page=scan" class="nav-link">Scan</a>
-        <a href="?page=contact" class="nav-link">Contact</a>
-        <a href="?page=about" class="nav-link">About</a>
+        <a href="?page=scan" target="_self" class="nav-link">Scan</a>
+        <a href="?page=contact" target="_self" class="nav-link">Contact</a>
+        <a href="?page=about" target="_self" class="nav-link">About</a>
       </div>
     </div>
     """,
@@ -741,31 +746,7 @@ if page not in ["scan", "contact", "about"]:
 st.session_state.page = page
 
 
-def decide_most_manipulative(categories):
-    totals = {}
-    for data in categories.values():
-        for sender, count in data.get("by_sender", {}).items():
-            totals[sender] = totals.get(sender, 0) + count
-
-    if not totals:
-        return None, 0
-
-    max_count = max(totals.values())
-    top = [sender for sender, count in totals.items() if count == max_count]
-    if len(top) == 1:
-        return top[0], max_count
-    return ", ".join(sorted(top)), max_count
-
-
-def compute_sender_totals(categories):
-    totals = {}
-    for data in categories.values():
-        for sender, count in data.get("by_sender", {}).items():
-            totals[sender] = totals.get(sender, 0) + count
-    return totals
-
-
-def compute_weighted_scores(categories, message_counts, ignore_verbal_aggression=False):
+def compute_weighted_scores(categories, ignore_verbal_aggression=False):
     weighted = {}
     for key, data in categories.items():
         weight = WEIGHTS.get(key, 1)
@@ -774,6 +755,7 @@ def compute_weighted_scores(categories, message_counts, ignore_verbal_aggression
         for sender, count in data.get("by_sender", {}).items():
             entry = weighted.setdefault(sender, {"weighted_sum": 0, "rate_per_100": 0})
             entry["weighted_sum"] += count * weight
+    return weighted
 
 def render_copy_button(text: str, key: str):
     safe = json.dumps(text)
@@ -804,12 +786,7 @@ def render_copy_button(text: str, key: str):
     return None
 
 
-
-    return weighted
-
-
 if st.session_state.page == "scan" and st.session_state.scan_page == "upload":
-    st.markdown('<div class="hero-card">', unsafe_allow_html=True)
     st.markdown('<div class="hero-title">Am I DeluluOK</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="hero-subtitle">Upload Telegram JSON export (result.json) to scan for basic manipulation phrases.</div>',
@@ -851,7 +828,6 @@ if st.session_state.page == "scan" and st.session_state.scan_page == "upload":
         st.session_state.scan_page = "summary"
         if hasattr(st, "rerun"):
             st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
 
 elif st.session_state.page == "scan" and st.session_state.scan_page == "summary":
     report = st.session_state.report
@@ -865,10 +841,8 @@ elif st.session_state.page == "scan" and st.session_state.scan_page == "summary"
     st.write(f"Messages parsed: {report['messages_parsed']}")
 
     ignore_verbal = report.get("options", {}).get("ignore_verbal_aggression", False)
-    sender_totals = compute_sender_totals(report["categories"])
     weighted_scores = compute_weighted_scores(
         report["categories"],
-        report.get("message_counts", {}),
         ignore_verbal_aggression=ignore_verbal,
     )
 
