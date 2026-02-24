@@ -1,4 +1,5 @@
 ﻿import json
+import time
 import streamlit as st
 import streamlit.components.v1 as components
 from datetime import datetime, timedelta
@@ -586,7 +587,7 @@ st.markdown(
     .custom-header {
         position: fixed;
         top: 0; left: 0; right: 0;
-        height: 72px;
+        height: 96px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -641,7 +642,7 @@ st.markdown(
     }
 
     .block-container {
-        padding-top: 82px;
+        padding-top: 110px;
         padding-bottom: 86px;
         max-width: 980px;
     }
@@ -678,7 +679,7 @@ st.markdown(
         margin: 0 14px;
         text-decoration: none;
         color: rgba(255,255,255,0.88) !important;
-        font-size: 18px;
+        font-size: 20px;
         font-weight: 600;
         transition: 0.2s ease;
     }
@@ -713,11 +714,12 @@ st.markdown(
 st.markdown(
     """
     <div class="custom-header">
-      <div style="font-size:20px;font-weight:700;color:white;">DELULU</div>
-      <div style="margin-top:6px;">
+      <div style="font-size:30px;font-weight:700;color:white;line-height:1;">DELULU</div>
+      <div style="margin-top:10px;">
         <a href="?page=scan" target="_self" class="nav-link">Scan</a>
         <a href="?page=contact" target="_self" class="nav-link">Contact</a>
         <a href="?page=about" target="_self" class="nav-link">About</a>
+        <a href="?page=research" target="_self" class="nav-link">Research</a>
       </div>
     </div>
     """,
@@ -741,7 +743,7 @@ if "report" not in st.session_state:
 page = st.query_params.get("page", "scan")
 if isinstance(page, list):
     page = page[0] if page else "scan"
-if page not in ["scan", "contact", "about"]:
+if page not in ["scan", "contact", "about", "research"]:
     page = "scan"
 st.session_state.page = page
 
@@ -815,6 +817,10 @@ if st.session_state.page == "scan" and st.session_state.scan_page == "upload":
     if not uploaded_file:
         st.info("Waiting for a Telegram export file...")
     else:
+        progress_bar = st.progress(0, text="Starting scan...")
+        progress_bar.progress(10, text="Reading uploaded file...")
+        time.sleep(0.2)
+
         try:
             messages = load_messages_from_bytes(uploaded_file.getvalue())
             st.session_state.messages = messages
@@ -822,10 +828,18 @@ if st.session_state.page == "scan" and st.session_state.scan_page == "upload":
             st.error("Invalid JSON file. Please upload a Telegram export result.json.")
             st.stop()
 
+        progress_bar.progress(40, text="Parsing messages...")
+        time.sleep(0.25)
         results = analyze_messages(messages, ignore_verbal_aggression=ignore_swears)
+        progress_bar.progress(75, text="Analyzing conversation patterns...")
+        time.sleep(0.25)
         report = build_report(uploaded_file.name, messages, results, ignore_verbal_aggression=ignore_swears)
+        progress_bar.progress(95, text="Finalizing report...")
+        time.sleep(0.2)
         st.session_state.report = report
         st.session_state.scan_page = "summary"
+        progress_bar.progress(100, text="Done. Opening summary...")
+        time.sleep(0.15)
         if hasattr(st, "rerun"):
             st.rerun()
 
@@ -1063,3 +1077,33 @@ elif st.session_state.page == "about":
         Built with ❤️ in 2026.
         """
     )
+elif st.session_state.page == "research":
+    st.markdown("## 🧠 Psychology Library (Evidence-Based)")
+    st.markdown(
+        """
+        This page explains core concepts behind the Delulu scan and links only to
+        reputable health organizations and peer-reviewed research.
+
+        ### What each concept means
+        - **Gaslighting:** a form of psychological manipulation where someone is made to doubt memory, perception, or judgment.
+        - **Psychological/Emotional abuse:** non-physical behaviors used to harm, intimidate, control, or isolate a partner.
+        - **Verbal aggression:** hostile language (insults, humiliation, threats) that can contribute to emotional harm.
+        - **Passive-aggressive behavior:** indirect expression of anger or resistance instead of direct communication.
+        - **Blame-shifting / triangulation:** communication strategies where responsibility is deflected or third parties are used to create pressure.
+
+        ### Important context
+        - Delulu is a **keyword-based educational tool**. It is not a clinical test.
+        - These patterns can appear in many contexts; one phrase alone does not prove abuse.
+        - If someone feels unsafe, real-world support and licensed professionals matter more than any app score.
+
+        ### Trusted sources and research
+        - [World Health Organization (WHO): Violence against women](https://www.who.int/news-room/fact-sheets/detail/violence-against-women)
+        - [CDC: About Intimate Partner Violence](https://www.cdc.gov/intimate-partner-violence/about/index.html)
+        - [APA Dictionary: Gaslight](https://dictionary.apa.org/gaslight)
+        - [APA Dictionary: Passive-aggression](https://dictionary.apa.org/passive-aggression)
+        - [Bowen Center: Triangles (family systems concept)](https://www.thebowencenter.org/triangles)
+        - [Peer-reviewed review (PMC): Psychological violence and mental health outcomes](https://pmc.ncbi.nlm.nih.gov/articles/PMC11287593/)
+        - [PubMed indexed article: Gaslighting and mental health](https://pubmed.ncbi.nlm.nih.gov/38115535/)
+        """
+    )
+
