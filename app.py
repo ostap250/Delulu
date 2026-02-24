@@ -1,5 +1,4 @@
 ﻿import json
-import time
 import streamlit as st
 import streamlit.components.v1 as components
 from datetime import datetime, timedelta
@@ -587,7 +586,7 @@ st.markdown(
     .custom-header {
         position: fixed;
         top: 0; left: 0; right: 0;
-        height: 96px;
+        height: 72px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -614,7 +613,7 @@ st.markdown(
     .custom-footer {
         position: fixed;
         bottom: 0; left: 0; right: 0;
-        height: 58px;
+        height: 44px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -624,10 +623,8 @@ st.markdown(
           rgba(10, 14, 28, 0.55) 100%);
         backdrop-filter: blur(10px);
         border-top: 1px solid rgba(255,255,255,0.06);
-        color: rgba(232, 236, 255, 0.78);
-        font-size: 13px;
-        font-weight: 500;
-        letter-spacing: 0.01em;
+        color: rgba(255,255,255,0.65);
+        font-size: 12px;
     }
 
     .custom-footer::before {
@@ -642,8 +639,8 @@ st.markdown(
     }
 
     .block-container {
-        padding-top: 110px;
-        padding-bottom: 86px;
+        padding-top: 96px;
+        padding-bottom: 66px;
         max-width: 980px;
     }
 
@@ -673,19 +670,16 @@ st.markdown(
         color: rgba(255,255,255,0.55);
     }
 
-    .custom-header .nav-link,
-    .custom-header .nav-link:visited,
-    .custom-header .nav-link:active {
+    .nav-link {
         margin: 0 14px;
         text-decoration: none;
-        color: rgba(255,255,255,0.88) !important;
-        font-size: 20px;
-        font-weight: 600;
+        color: rgba(255,255,255,0.75);
+        font-size: 14px;
         transition: 0.2s ease;
     }
 
-    .custom-header .nav-link:hover {
-        color: #ffffff !important;
+    .nav-link:hover {
+        color: white;
     }
 
     .stApp {
@@ -714,12 +708,11 @@ st.markdown(
 st.markdown(
     """
     <div class="custom-header">
-      <div style="font-size:30px;font-weight:700;color:white;line-height:1;">DELULU</div>
-      <div style="margin-top:10px;">
-        <a href="?page=scan" target="_self" class="nav-link">Scan</a>
-        <a href="?page=contact" target="_self" class="nav-link">Contact</a>
-        <a href="?page=about" target="_self" class="nav-link">About</a>
-        <a href="?page=research" target="_self" class="nav-link">Research</a>
+      <div style="font-size:20px;font-weight:700;color:white;">DELULU</div>
+      <div style="margin-top:6px;">
+        <a href="?page=scan" class="nav-link">Scan</a>
+        <a href="?page=contact" class="nav-link">Contact</a>
+        <a href="?page=about" class="nav-link">About</a>
       </div>
     </div>
     """,
@@ -743,12 +736,36 @@ if "report" not in st.session_state:
 page = st.query_params.get("page", "scan")
 if isinstance(page, list):
     page = page[0] if page else "scan"
-if page not in ["scan", "contact", "about", "research"]:
+if page not in ["scan", "contact", "about"]:
     page = "scan"
 st.session_state.page = page
 
 
-def compute_weighted_scores(categories, ignore_verbal_aggression=False):
+def decide_most_manipulative(categories):
+    totals = {}
+    for data in categories.values():
+        for sender, count in data.get("by_sender", {}).items():
+            totals[sender] = totals.get(sender, 0) + count
+
+    if not totals:
+        return None, 0
+
+    max_count = max(totals.values())
+    top = [sender for sender, count in totals.items() if count == max_count]
+    if len(top) == 1:
+        return top[0], max_count
+    return ", ".join(sorted(top)), max_count
+
+
+def compute_sender_totals(categories):
+    totals = {}
+    for data in categories.values():
+        for sender, count in data.get("by_sender", {}).items():
+            totals[sender] = totals.get(sender, 0) + count
+    return totals
+
+
+def compute_weighted_scores(categories, message_counts, ignore_verbal_aggression=False):
     weighted = {}
     for key, data in categories.items():
         weight = WEIGHTS.get(key, 1)
@@ -757,7 +774,6 @@ def compute_weighted_scores(categories, ignore_verbal_aggression=False):
         for sender, count in data.get("by_sender", {}).items():
             entry = weighted.setdefault(sender, {"weighted_sum": 0, "rate_per_100": 0})
             entry["weighted_sum"] += count * weight
-    return weighted
 
 def render_copy_button(text: str, key: str):
     safe = json.dumps(text)
@@ -788,7 +804,12 @@ def render_copy_button(text: str, key: str):
     return None
 
 
+
+    return weighted
+
+
 if st.session_state.page == "scan" and st.session_state.scan_page == "upload":
+    st.markdown('<div class="hero-card">', unsafe_allow_html=True)
     st.markdown('<div class="hero-title">Am I DeluluOK</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="hero-subtitle">Upload Telegram JSON export (result.json) to scan for basic manipulation phrases.</div>',
@@ -817,10 +838,6 @@ if st.session_state.page == "scan" and st.session_state.scan_page == "upload":
     if not uploaded_file:
         st.info("Waiting for a Telegram export file...")
     else:
-        progress_bar = st.progress(0, text="Starting scan...")
-        progress_bar.progress(10, text="Reading uploaded file...")
-        time.sleep(0.2)
-
         try:
             messages = load_messages_from_bytes(uploaded_file.getvalue())
             st.session_state.messages = messages
@@ -828,20 +845,13 @@ if st.session_state.page == "scan" and st.session_state.scan_page == "upload":
             st.error("Invalid JSON file. Please upload a Telegram export result.json.")
             st.stop()
 
-        progress_bar.progress(40, text="Parsing messages...")
-        time.sleep(0.25)
         results = analyze_messages(messages, ignore_verbal_aggression=ignore_swears)
-        progress_bar.progress(75, text="Analyzing conversation patterns...")
-        time.sleep(0.25)
         report = build_report(uploaded_file.name, messages, results, ignore_verbal_aggression=ignore_swears)
-        progress_bar.progress(95, text="Finalizing report...")
-        time.sleep(0.2)
         st.session_state.report = report
         st.session_state.scan_page = "summary"
-        progress_bar.progress(100, text="Done. Opening summary...")
-        time.sleep(0.15)
         if hasattr(st, "rerun"):
             st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
 elif st.session_state.page == "scan" and st.session_state.scan_page == "summary":
     report = st.session_state.report
@@ -855,8 +865,10 @@ elif st.session_state.page == "scan" and st.session_state.scan_page == "summary"
     st.write(f"Messages parsed: {report['messages_parsed']}")
 
     ignore_verbal = report.get("options", {}).get("ignore_verbal_aggression", False)
+    sender_totals = compute_sender_totals(report["categories"])
     weighted_scores = compute_weighted_scores(
         report["categories"],
+        report.get("message_counts", {}),
         ignore_verbal_aggression=ignore_verbal,
     )
 
@@ -962,6 +974,7 @@ elif st.session_state.page == "scan" and st.session_state.scan_page == "summary"
         else:
             st.markdown("- (empty summary)")
         st.text_area("", summary_text, height=220)
+
 
     timeline_messages = st.session_state.get("messages", [])
     timeline_preds = predict_messages(timeline_messages, ignore_verbal_aggression=ignore_verbal)
@@ -1074,36 +1087,6 @@ elif st.session_state.page == "about":
         diagnosis or legal advice.
 
         Version: v0.1  
-        Built with ❤️ in 2026.
+        Built with Love in 2026.
         """
     )
-elif st.session_state.page == "research":
-    st.markdown("## 🧠 Psychology Library (Evidence-Based)")
-    st.markdown(
-        """
-        This page explains core concepts behind the Delulu scan and links only to
-        reputable health organizations and peer-reviewed research.
-
-        ### What each concept means
-        - **Gaslighting:** a form of psychological manipulation where someone is made to doubt memory, perception, or judgment.
-        - **Psychological/Emotional abuse:** non-physical behaviors used to harm, intimidate, control, or isolate a partner.
-        - **Verbal aggression:** hostile language (insults, humiliation, threats) that can contribute to emotional harm.
-        - **Passive-aggressive behavior:** indirect expression of anger or resistance instead of direct communication.
-        - **Blame-shifting / triangulation:** communication strategies where responsibility is deflected or third parties are used to create pressure.
-
-        ### Important context
-        - Delulu is a **keyword-based educational tool**. It is not a clinical test.
-        - These patterns can appear in many contexts; one phrase alone does not prove abuse.
-        - If someone feels unsafe, real-world support and licensed professionals matter more than any app score.
-
-        ### Trusted sources and research
-        - [World Health Organization (WHO): Violence against women](https://www.who.int/news-room/fact-sheets/detail/violence-against-women)
-        - [CDC: About Intimate Partner Violence](https://www.cdc.gov/intimate-partner-violence/about/index.html)
-        - [APA Dictionary: Gaslight](https://dictionary.apa.org/gaslight)
-        - [APA Dictionary: Passive-aggression](https://dictionary.apa.org/passive-aggression)
-        - [Bowen Center: Triangles (family systems concept)](https://www.thebowencenter.org/triangles)
-        - [Peer-reviewed review (PMC): Psychological violence and mental health outcomes](https://pmc.ncbi.nlm.nih.gov/articles/PMC11287593/)
-        - [PubMed indexed article: Gaslighting and mental health](https://pubmed.ncbi.nlm.nih.gov/38115535/)
-        """
-    )
-
