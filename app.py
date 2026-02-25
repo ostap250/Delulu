@@ -1,8 +1,10 @@
 ﻿import json
+import os
 import streamlit as st
 import streamlit.components.v1 as components
 from datetime import datetime, timedelta
 
+from llm_service import detect_manipulation
 from rules.context_window import apply_context_window_boost
 
 if "page" not in st.session_state:
@@ -423,6 +425,16 @@ def get_demo_messages():
 
 
 def predict_messages(messages, ignore_verbal_aggression=False):
+    llm_enabled = os.getenv("DELULU_LLM_ENABLED", "0").lower() in {"1", "true", "yes"}
+    try:
+        llm_timeout_seconds = float(os.getenv("DELULU_LLM_TIMEOUT_SECONDS", "8"))
+    except ValueError:
+        llm_timeout_seconds = 8.0
+    llm_timeout_seconds = max(1.0, min(30.0, llm_timeout_seconds))
+    enabled_categories = [
+        key for key in CATEGORIES.keys()
+        if not (ignore_verbal_aggression and key == "verbal_aggression")
+    ]
 
     predictions = {}
     prev_sender = None
@@ -432,13 +444,11 @@ def predict_messages(messages, ignore_verbal_aggression=False):
         sender = msg["sender"]
         text = msg["text"]
         text_lower = text.lower().strip()
-        categories = []
-        severity = {}
+        rule_categories = []
         metadata = {}
 
-        for key, category in CATEGORIES.items():
-            if ignore_verbal_aggression and key == "verbal_aggression":
-                continue
+        for key in enabled_categories:
+            category = CATEGORIES[key]
             matched = False
             keywords = category.get("keywords", [])
 
@@ -454,8 +464,28 @@ def predict_messages(messages, ignore_verbal_aggression=False):
                     matched = True
 
             if matched:
-                categories.append(key)
-                severity[key] = BASE_SEVERITY.get(key, 3)
+                rule_categories.append(key)
+
+        fallback_llm = {
+            "is_manipulation": bool(rule_categories),
+            "categories": rule_categories,
+            "confidence": 0.65 if rule_categories else 0.2,
+            "explanation": "Rule-based keyword matching fallback result.",
+        }
+
+        llm_result = fallback_llm
+        if llm_enabled:
+            llm_result = detect_manipulation(
+                {"sender": sender, "text": text},
+                allowed_categories=enabled_categories,
+                fallback_result=fallback_llm,
+                timeout_seconds=llm_timeout_seconds,
+            )
+
+        categories = llm_result["categories"] if llm_result["is_manipulation"] else []
+        severity = {key: BASE_SEVERITY.get(key, 3) for key in categories}
+        metadata["llm"] = llm_result
+        metadata["detector"] = "llm" if llm_enabled else "rules"
 
         karpman_role, _, _ = classify_karpman(text)
         predictions[msg.get("id")] = {
@@ -469,8 +499,6 @@ def predict_messages(messages, ignore_verbal_aggression=False):
         prev_text = text
 
     return apply_context_window_boost(messages, predictions)
-
-
 
 def analyze_messages(messages, ignore_verbal_aggression=False):
     results = {key: {"total": 0, "by_sender": {}, "examples": []} for key in CATEGORIES}
@@ -586,7 +614,7 @@ st.markdown(
     .custom-header {
         position: fixed;
         top: 0; left: 0; right: 0;
-        height: 72px;
+        height: 108px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -639,7 +667,7 @@ st.markdown(
     }
 
     .block-container {
-        padding-top: 96px;
+        padding-top: 128px;
         padding-bottom: 66px;
         max-width: 980px;
     }
@@ -670,16 +698,19 @@ st.markdown(
         color: rgba(255,255,255,0.55);
     }
 
-    .nav-link {
+    .custom-header .nav-link,
+    .custom-header .nav-link:visited,
+    .custom-header .nav-link:active {
         margin: 0 14px;
         text-decoration: none;
-        color: rgba(255,255,255,0.75);
-        font-size: 14px;
+        color: rgba(255,255,255,0.86) !important;
+        font-size: 18px;
+        font-weight: 600;
         transition: 0.2s ease;
     }
 
-    .nav-link:hover {
-        color: white;
+    .custom-header .nav-link:hover {
+        color: #ffffff !important;
     }
 
     .stApp {
@@ -708,11 +739,12 @@ st.markdown(
 st.markdown(
     """
     <div class="custom-header">
-      <div style="font-size:20px;font-weight:700;color:white;">DELULU</div>
-      <div style="margin-top:6px;">
-        <a href="?page=scan" class="nav-link">Scan</a>
-        <a href="?page=contact" class="nav-link">Contact</a>
-        <a href="?page=about" class="nav-link">About</a>
+      <div style="font-size:30px;font-weight:700;color:white;line-height:1;">DELULU</div>
+      <div style="margin-top:10px;">
+        <a href="?page=scan" target="_self" class="nav-link">Scan</a>
+        <a href="?page=contact" target="_self" class="nav-link">Contact</a>
+        <a href="?page=about" target="_self" class="nav-link">About</a>
+        <a href="?page=terminology" target="_self" class="nav-link">Terminology</a>
       </div>
     </div>
     """,
@@ -736,7 +768,7 @@ if "report" not in st.session_state:
 page = st.query_params.get("page", "scan")
 if isinstance(page, list):
     page = page[0] if page else "scan"
-if page not in ["scan", "contact", "about"]:
+if page not in ["scan", "contact", "about", "terminology"]:
     page = "scan"
 st.session_state.page = page
 
@@ -809,7 +841,6 @@ def render_copy_button(text: str, key: str):
 
 
 if st.session_state.page == "scan" and st.session_state.scan_page == "upload":
-    st.markdown('<div class="hero-card">', unsafe_allow_html=True)
     st.markdown('<div class="hero-title">Am I DeluluOK</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="hero-subtitle">Upload Telegram JSON export (result.json) to scan for basic manipulation phrases.</div>',
@@ -851,8 +882,6 @@ if st.session_state.page == "scan" and st.session_state.scan_page == "upload":
         st.session_state.scan_page = "summary"
         if hasattr(st, "rerun"):
             st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
-
 elif st.session_state.page == "scan" and st.session_state.scan_page == "summary":
     report = st.session_state.report
     if not report:
@@ -1090,3 +1119,74 @@ elif st.session_state.page == "about":
         Built with Love in 2026.
         """
     )
+elif st.session_state.page == "terminology":
+    st.markdown("## 📚 Terminology & Sources")
+    st.markdown(
+        """
+        These are the key concepts used in Delulu, with simple examples.
+        Delulu is educational only and not a clinical diagnosis tool.
+        """
+    )
+
+    st.markdown("### 1) Gaslighting")
+    st.markdown(
+        """
+        **Meaning:** Making someone doubt their memory or perception.  
+        **Example:** "That never happened. You're remembering it wrong."
+        """
+    )
+
+    st.markdown("### 2) Passive-Aggressive")
+    st.markdown(
+        """
+        **Meaning:** Indirect hostility or resistance instead of direct communication.  
+        **Example:** "I'm fine. Do whatever you want."
+        """
+    )
+
+    st.markdown("### 3) Blame-Shifting")
+    st.markdown(
+        """
+        **Meaning:** Moving responsibility to someone else.  
+        **Example:** "This is your fault, you made me do it."
+        """
+    )
+
+    st.markdown("### 4) Triangulation")
+    st.markdown(
+        """
+        **Meaning:** Using third parties to pressure or validate a claim.  
+        **Example:** "Everyone thinks you're overreacting."
+        """
+    )
+
+    st.markdown("### 5) Verbal Aggression")
+    st.markdown(
+        """
+        **Meaning:** Hostile/abusive language intended to hurt or intimidate.  
+        **Example:** "Shut up."
+        """
+    )
+
+    st.markdown("### 6) Karpman Drama Triangle Roles")
+    st.markdown(
+        """
+        **Victim:** helpless/self-pity framing.  
+        **Persecutor:** blaming/attacking language.  
+        **Rescuer:** over-helping/fixing to control dynamic.
+        """
+    )
+
+    st.markdown("### Trusted sources")
+    st.markdown(
+        """
+        - [World Health Organization (WHO): Violence against women](https://www.who.int/news-room/fact-sheets/detail/violence-against-women)
+        - [CDC: About Intimate Partner Violence](https://www.cdc.gov/intimate-partner-violence/about/index.html)
+        - [APA Dictionary: Gaslight](https://dictionary.apa.org/gaslight)
+        - [APA Dictionary: Passive-aggression](https://dictionary.apa.org/passive-aggression)
+        - [Mayo Clinic: Passive-aggressive behavior](https://www.mayoclinic.org/healthy-lifestyle/adult-health/in-depth/passive-aggressive-behavior/art-20044978)
+        - [Bowen Center: Triangles](https://www.thebowencenter.org/triangles)
+        - [PubMed: Gaslighting and mental health](https://pubmed.ncbi.nlm.nih.gov/38115535/)
+        """
+    )
+
