@@ -9,6 +9,7 @@ def detect_manipulation(
     *,
     allowed_categories: Iterable[str],
     fallback_result: Dict[str, Any],
+    avoid_patterns: Iterable[str] = (),
     timeout_seconds: float = 8.0,
 ) -> Dict[str, Any]:
     """
@@ -24,11 +25,22 @@ def detect_manipulation(
     if not text:
         return fallback
 
+    avoid_list = [str(x).strip() for x in avoid_patterns if str(x).strip()]
+    avoid_list = avoid_list[:5]
+
     model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     endpoint = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{parse.quote(model)}:generateContent?key={parse.quote(api_key)}"
     )
+
+    avoid_section = ""
+    if avoid_list:
+        avoid_section = (
+            "Avoid over-flagging these known false-positive patterns from user feedback:\n"
+            + "\n".join(f"- {item}" for item in avoid_list)
+            + "\n\n"
+        )
 
     prompt_text = (
         "You classify whether text contains manipulation patterns. Return JSON only.\n"
@@ -39,6 +51,7 @@ def detect_manipulation(
         "- Use only allowed category names.\n"
         "- If uncertain, lower confidence.\n"
         "- Keep explanation under 180 characters.\n\n"
+        f"{avoid_section}"
         f"Text to analyze:\n{text}"
     )
 
