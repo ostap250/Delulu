@@ -1,0 +1,50 @@
+﻿TODO - Delulu Project (Make It Work End-to-End)
+
+1) Environment
+- Create and activate a Python virtual environment.
+- Install dependencies: pip install -r requirements.txt
+
+2) LLM setup (Gemini)
+- Set GEMINI_API_KEY in your terminal.
+- Enable LLM path: set DELULU_LLM_ENABLED=1
+- Optional model override: set GEMINI_MODEL=gemini-2.5-flash
+
+3) Run app
+- Start Streamlit: streamlit run app.py
+
+4) Verify core pages
+- Scan page works with upload/demo.
+- Supposed Manipulation page works with text analyze.
+- Terminology/About/Contact pages open from header.
+
+5) Verify database and logs
+- Confirm delulu.db is created.
+- Confirm tables exist: analysis_events, feedback_labels, suspected_submissions.
+- Confirm delulu_metrics.log is being written.
+
+6) Verify feedback flow
+- In Summary, click:
+  - Correct
+  - I did not count this as manipulation
+- Confirm feedback is saved and button state updates.
+
+7) Safety checks
+- Upload size limit behaves as expected (200MB message).
+- Rate limits trigger correctly when spam-clicking analyze/upload.
+- PII warning and retention policy text are visible.
+
+8) Config tuning (optional)
+- DELULU_RETENTION_DAYS (default 90)
+- DELULU_MAX_UPLOAD_BYTES (default 200MB)
+- DELULU_MAX_TEXT_CHARS (default 1500)
+- DELULU_RATE_LIMIT_WINDOW_SECONDS (default 60)
+- DELULU_RATE_LIMIT_ACTIONS (default 12)
+
+9) Important cleanup
+- Remove dead/duplicate code blocks in app.py (old helper remnants).
+- Add tests for storage.py and prediction flow.
+
+10) Deploy prep
+- Add a secure secret management strategy for GEMINI_API_KEY.
+- Pin dependencies in requirements.txt.
+- Add README section: setup + env vars + run commands.
