@@ -1,14 +1,57 @@
 ﻿import json
 import os
+import time
 import streamlit as st
 import streamlit.components.v1 as components
 from datetime import datetime, timedelta
 
 from llm_service import detect_manipulation
 from rules.context_window import apply_context_window_boost
+from storage import (
+    apply_data_retention,
+    compute_input_text_hash,
+    get_false_positive_memories,
+    get_quality_metrics,
+    get_rule_feedback_adjustments,
+    init_db,
+    store_analysis_event,
+    store_feedback_label,
+    store_suspected_submission,
+    update_suspected_submission_label,
+)
 
 if "page" not in st.session_state:
     st.session_state.page = "scan"
+
+init_db()
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+DATA_RETENTION_DAYS = max(1, _env_int("DELULU_RETENTION_DAYS", 90))
+MAX_UPLOAD_BYTES = max(1024 * 1024, _env_int("DELULU_MAX_UPLOAD_BYTES", 200 * 1024 * 1024))
+MAX_SUPPOSED_TEXT_CHARS = max(200, _env_int("DELULU_MAX_TEXT_CHARS", 1500))
+RATE_LIMIT_WINDOW_SECONDS = max(5, _env_int("DELULU_RATE_LIMIT_WINDOW_SECONDS", 60))
+RATE_LIMIT_ACTIONS = max(1, _env_int("DELULU_RATE_LIMIT_ACTIONS", 12))
+
+apply_data_retention(DATA_RETENTION_DAYS)
+
+
+def consume_rate_limit(action_key: str, *, limit: int = RATE_LIMIT_ACTIONS, window_seconds: int = RATE_LIMIT_WINDOW_SECONDS) -> bool:
+    state = st.session_state.setdefault("rate_limit_state", {})
+    now = time.time()
+    recent = [ts for ts in state.get(action_key, []) if now - ts < window_seconds]
+    if len(recent) >= limit:
+        state[action_key] = recent
+        return False
+    recent.append(now)
+    state[action_key] = recent
+    return True
 
 CATEGORIES = {
     "gaslighting": {
@@ -435,6 +478,7 @@ def predict_messages(messages, ignore_verbal_aggression=False):
         key for key in CATEGORIES.keys()
         if not (ignore_verbal_aggression and key == "verbal_aggression")
     ]
+    rule_adjustments = get_rule_feedback_adjustments(enabled_categories)
 
     predictions = {}
     prev_sender = None
@@ -474,17 +518,28 @@ def predict_messages(messages, ignore_verbal_aggression=False):
         }
 
         llm_result = fallback_llm
+        avoid_patterns = []
         if llm_enabled:
+            avoid_patterns = get_false_positive_memories(text, limit=3)
             llm_result = detect_manipulation(
                 {"sender": sender, "text": text},
                 allowed_categories=enabled_categories,
                 fallback_result=fallback_llm,
+                avoid_patterns=avoid_patterns,
                 timeout_seconds=llm_timeout_seconds,
             )
 
         categories = llm_result["categories"] if llm_result["is_manipulation"] else []
-        severity = {key: BASE_SEVERITY.get(key, 3) for key in categories}
+        severity = {}
+        for key in categories:
+            base = BASE_SEVERITY.get(key, 3)
+            factor = rule_adjustments.get(key, 1.0)
+            severity[key] = max(1, int(round(base * factor)))
         metadata["llm"] = llm_result
+        metadata["rule_categories"] = rule_categories
+        metadata["rule_is_manipulation"] = bool(rule_categories)
+        metadata["avoid_patterns"] = avoid_patterns
+        metadata["rule_adjustments"] = {key: rule_adjustments.get(key, 1.0) for key in categories}
         metadata["detector"] = "llm" if llm_enabled else "rules"
 
         karpman_role, _, _ = classify_karpman(text)
@@ -500,9 +555,36 @@ def predict_messages(messages, ignore_verbal_aggression=False):
 
     return apply_context_window_boost(messages, predictions)
 
-def analyze_messages(messages, ignore_verbal_aggression=False):
+
+def build_analysis_event_outputs(predictions):
+    model_output = {}
+    rule_output = {}
+
+    for message_id, pred in predictions.items():
+        key = str(message_id)
+        metadata = pred.get("metadata", {})
+
+        model_output[key] = metadata.get(
+            "llm",
+            {
+                "is_manipulation": bool(pred.get("categories")),
+                "categories": pred.get("categories", []),
+                "confidence": 0.0,
+                "explanation": "No model metadata available.",
+            },
+        )
+        rule_output[key] = {
+            "is_manipulation": bool(metadata.get("rule_is_manipulation", False)),
+            "categories": metadata.get("rule_categories", []),
+        }
+
+    return model_output, rule_output
+
+
+def analyze_messages(messages, ignore_verbal_aggression=False, predictions=None):
     results = {key: {"total": 0, "by_sender": {}, "examples": []} for key in CATEGORIES}
-    predictions = predict_messages(messages, ignore_verbal_aggression=ignore_verbal_aggression)
+    if predictions is None:
+        predictions = predict_messages(messages, ignore_verbal_aggression=ignore_verbal_aggression)
 
     for msg in messages:
         sender = msg["sender"]
@@ -742,6 +824,7 @@ st.markdown(
       <div style="font-size:30px;font-weight:700;color:white;line-height:1;">DELULU</div>
       <div style="margin-top:10px;">
         <a href="?page=scan" target="_self" class="nav-link">Scan</a>
+        <a href="?page=supposed" target="_self" class="nav-link">Supposed Manipulation</a>
         <a href="?page=contact" target="_self" class="nav-link">Contact</a>
         <a href="?page=about" target="_self" class="nav-link">About</a>
         <a href="?page=terminology" target="_self" class="nav-link">Terminology</a>
@@ -768,7 +851,7 @@ if "report" not in st.session_state:
 page = st.query_params.get("page", "scan")
 if isinstance(page, list):
     page = page[0] if page else "scan"
-if page not in ["scan", "contact", "about", "terminology"]:
+if page not in ["scan", "supposed", "contact", "about", "terminology"]:
     page = "scan"
 st.session_state.page = page
 
@@ -854,10 +937,33 @@ if st.session_state.page == "scan" and st.session_state.scan_page == "upload":
         '<div class="small-note">Demo includes examples of gaslighting, blame-shifting, triangulation and passive-aggressive responses.</div>',
         unsafe_allow_html=True,
     )
+    st.warning(
+        "PII warning: Do not upload private identifiers (phone numbers, addresses, IDs, banking info). "
+        "Uploaded text can be stored for quality improvement."
+    )
+    st.caption(
+        f"Data retention policy: analysis/feedback records are kept for up to {DATA_RETENTION_DAYS} days "
+        "in local SQLite storage, then automatically deleted."
+    )
     if st.button("✨ Try Demo Example"):
+        if not consume_rate_limit("scan_demo"):
+            st.error("Rate limit reached. Please wait a minute before trying demo again.")
+            st.stop()
         demo_messages = get_demo_messages()
         st.session_state.messages = demo_messages
-        results = analyze_messages(demo_messages, ignore_verbal_aggression=ignore_swears)
+        predictions = predict_messages(demo_messages, ignore_verbal_aggression=ignore_swears)
+        results = analyze_messages(
+            demo_messages,
+            ignore_verbal_aggression=ignore_swears,
+            predictions=predictions,
+        )
+        model_output, rule_output = build_analysis_event_outputs(predictions)
+        event_id = store_analysis_event(
+            input_text_hash=compute_input_text_hash(demo_messages),
+            model_output=model_output,
+            rule_output=rule_output,
+        )
+        st.session_state.last_analysis_event_id = event_id
         report = build_report("demo", demo_messages, results, ignore_verbal_aggression=ignore_swears)
         st.session_state.report = report
         st.session_state.scan_page = "summary"
@@ -869,14 +975,37 @@ if st.session_state.page == "scan" and st.session_state.scan_page == "upload":
     if not uploaded_file:
         st.info("Waiting for a Telegram export file...")
     else:
+        if not consume_rate_limit("scan_upload"):
+            st.error("Rate limit reached. Please wait a minute before uploading again.")
+            st.stop()
+
+        file_bytes = uploaded_file.getvalue()
+        if len(file_bytes) > MAX_UPLOAD_BYTES:
+            st.error(
+                f"File too large: {len(file_bytes)} bytes. Limit 200MB per file • JSON"
+            )
+            st.stop()
+
         try:
-            messages = load_messages_from_bytes(uploaded_file.getvalue())
+            messages = load_messages_from_bytes(file_bytes)
             st.session_state.messages = messages
         except json.JSONDecodeError:
             st.error("Invalid JSON file. Please upload a Telegram export result.json.")
             st.stop()
 
-        results = analyze_messages(messages, ignore_verbal_aggression=ignore_swears)
+        predictions = predict_messages(messages, ignore_verbal_aggression=ignore_swears)
+        results = analyze_messages(
+            messages,
+            ignore_verbal_aggression=ignore_swears,
+            predictions=predictions,
+        )
+        model_output, rule_output = build_analysis_event_outputs(predictions)
+        event_id = store_analysis_event(
+            input_text_hash=compute_input_text_hash(messages),
+            model_output=model_output,
+            rule_output=rule_output,
+        )
+        st.session_state.last_analysis_event_id = event_id
         report = build_report(uploaded_file.name, messages, results, ignore_verbal_aggression=ignore_swears)
         st.session_state.report = report
         st.session_state.scan_page = "summary"
@@ -892,6 +1021,17 @@ elif st.session_state.page == "scan" and st.session_state.scan_page == "summary"
 
     st.subheader("Summary")
     st.write(f"Messages parsed: {report['messages_parsed']}")
+    metrics = get_quality_metrics()
+    st.markdown("### Quality Metrics")
+    st.write(f"Feedback volume: {metrics['feedback_volume']}")
+    st.write(f"False-positive rate: {metrics['false_positive_rate'] * 100:.1f}%")
+    if metrics["agreement_comparable"] > 0:
+        st.write(
+            f"Agreement rate: {metrics['agreement_rate'] * 100:.1f}% "
+            f"(n={metrics['agreement_comparable']})"
+        )
+    else:
+        st.write("Agreement rate: not enough labeled feedback yet.")
 
     ignore_verbal = report.get("options", {}).get("ignore_verbal_aggression", False)
     sender_totals = compute_sender_totals(report["categories"])
@@ -1055,6 +1195,9 @@ elif st.session_state.page == "scan" and st.session_state.scan_page == "summary"
             else:
                 st.write(f"{sender}: no clear Karpman role detected.")
 
+    current_event_id = st.session_state.get("last_analysis_event_id")
+    feedback_state = st.session_state.setdefault("feedback_state", {})
+
     for key, info in CATEGORIES.items():
         label = info["label"]
         data = report["categories"][key]
@@ -1089,10 +1232,188 @@ elif st.session_state.page == "scan" and st.session_state.scan_page == "summary"
         else:
             st.write("Examples: none")
 
+        feedback_state_key = f"{current_event_id}:{key}"
+        saved_feedback = feedback_state.get(feedback_state_key)
+        feedback_cols = st.columns(2)
+        with feedback_cols[0]:
+            correct_clicked = st.button(
+                "✅ Correct",
+                key=f"feedback_correct_{feedback_state_key}",
+                disabled=saved_feedback is not None,
+            )
+        with feedback_cols[1]:
+            incorrect_clicked = st.button(
+                "❌ I did not count this as manipulation",
+                key=f"feedback_incorrect_{feedback_state_key}",
+                disabled=saved_feedback is not None,
+            )
+
+        if correct_clicked or incorrect_clicked:
+            if current_event_id is None:
+                st.warning("Could not save feedback for this report. Please run analysis again.")
+            else:
+                user_label = bool(correct_clicked)
+                first_example = ""
+                if data.get("examples"):
+                    first_example = str(data["examples"][0].get("text", "")).replace("\n", " ").replace(";", ",")
+                note = f"category={key};text={first_example[:220]}"
+                store_feedback_label(event_id=int(current_event_id), user_label=user_label, note=note)
+                feedback_state[feedback_state_key] = user_label
+                if hasattr(st, "toast"):
+                    st.toast("Feedback saved")
+                else:
+                    st.success("Feedback saved")
+
+        if feedback_state.get(feedback_state_key) is not None:
+            if feedback_state[feedback_state_key]:
+                st.caption("Feedback: marked as correct manipulation.")
+            else:
+                st.caption("Feedback: marked as not manipulation.")
+
     if st.button("Back to upload"):
         st.session_state.scan_page = "upload"
 
-if st.session_state.page == "contact":
+if st.session_state.page == "supposed":
+    st.markdown("## 🧪 Supposed Manipulation")
+    st.markdown("Paste a message and check rule-based + LLM analysis.")
+    st.warning(
+        "PII warning: avoid entering names, phone numbers, addresses, or account details."
+    )
+    st.caption(
+        f"Data retention policy: submitted text and model outputs are stored for up to "
+        f"{DATA_RETENTION_DAYS} days for quality metrics."
+    )
+    metrics = get_quality_metrics()
+    st.markdown("### Quality Metrics")
+    st.write(f"Feedback volume: {metrics['feedback_volume']}")
+    st.write(f"False-positive rate: {metrics['false_positive_rate'] * 100:.1f}%")
+    if metrics["agreement_comparable"] > 0:
+        st.write(
+            f"Agreement rate: {metrics['agreement_rate'] * 100:.1f}% "
+            f"(n={metrics['agreement_comparable']})"
+        )
+    else:
+        st.write("Agreement rate: not enough labeled feedback yet.")
+
+    suspected_text = st.text_area(
+        "Message text",
+        placeholder="Paste a message here...",
+        key="supposed_input_text",
+        height=160,
+    )
+    if st.button("Analyze text", key="supposed_analyze_button"):
+        text_value = (suspected_text or "").strip()
+        if not text_value:
+            st.warning("Please enter text first.")
+        elif len(text_value) > MAX_SUPPOSED_TEXT_CHARS:
+            st.error(
+                f"Text too long: {len(text_value)} chars. Max allowed is {MAX_SUPPOSED_TEXT_CHARS} chars."
+            )
+        elif not consume_rate_limit("supposed_analyze"):
+            st.error("Rate limit reached. Please wait a minute before running another analysis.")
+        else:
+            synthetic_message = [{"id": "supposed_input", "sender": "User", "text": text_value}]
+            predictions = predict_messages(synthetic_message, ignore_verbal_aggression=False)
+            pred = predictions.get("supposed_input", {"categories": [], "metadata": {}})
+            metadata = pred.get("metadata", {})
+            rule_categories = metadata.get("rule_categories", [])
+            llm_result = metadata.get(
+                "llm",
+                {
+                    "is_manipulation": bool(rule_categories),
+                    "categories": rule_categories,
+                    "confidence": 0.0,
+                    "explanation": "No model result available.",
+                },
+            )
+
+            model_output = {"supposed_input": llm_result}
+            rule_output = {
+                "supposed_input": {
+                    "is_manipulation": bool(rule_categories),
+                    "categories": rule_categories,
+                }
+            }
+            event_id = store_analysis_event(
+                input_text_hash=compute_input_text_hash(synthetic_message),
+                model_output=model_output,
+                rule_output=rule_output,
+            )
+            submission_payload = {
+                "event_id": event_id,
+                "llm_result": llm_result,
+                "rule_result": rule_output["supposed_input"],
+            }
+            submission_id = store_suspected_submission(
+                raw_text=text_value,
+                model_result=submission_payload,
+                final_user_label=None,
+            )
+
+            st.session_state.supposed_last_result = {
+                "event_id": event_id,
+                "submission_id": submission_id,
+                "raw_text": text_value,
+                "llm_result": llm_result,
+                "rule_categories": rule_categories,
+            }
+            if hasattr(st, "toast"):
+                st.toast("Submission saved")
+
+    supposed_result = st.session_state.get("supposed_last_result")
+    if supposed_result:
+        llm_result = supposed_result["llm_result"]
+        llm_categories = llm_result.get("categories", []) if llm_result.get("is_manipulation") else []
+        st.markdown("### Result")
+        st.write(f"Confidence: {float(llm_result.get('confidence', 0.0)):.2f}")
+        st.write(f"LLM categories: {', '.join(llm_categories) if llm_categories else 'none'}")
+        st.write(
+            f"Rule categories: "
+            f"{', '.join(supposed_result.get('rule_categories', [])) if supposed_result.get('rule_categories') else 'none'}"
+        )
+        st.write(f"Explanation: {llm_result.get('explanation', 'No explanation.')}")
+
+        feedback_state = st.session_state.setdefault("feedback_state", {})
+        feedback_state_key = f"supposed:{supposed_result['submission_id']}"
+        saved_feedback = feedback_state.get(feedback_state_key)
+        feedback_cols = st.columns(2)
+        with feedback_cols[0]:
+            correct_clicked = st.button(
+                "✅ Correct",
+                key=f"supposed_feedback_correct_{supposed_result['submission_id']}",
+                disabled=saved_feedback is not None,
+            )
+        with feedback_cols[1]:
+            incorrect_clicked = st.button(
+                "❌ I did not count this as manipulation",
+                key=f"supposed_feedback_incorrect_{supposed_result['submission_id']}",
+                disabled=saved_feedback is not None,
+            )
+
+        if correct_clicked or incorrect_clicked:
+            user_label = bool(correct_clicked)
+            store_feedback_label(
+                event_id=int(supposed_result["event_id"]),
+                user_label=user_label,
+                note=f"suspected_submission_id={supposed_result['submission_id']}",
+            )
+            update_suspected_submission_label(
+                submission_id=int(supposed_result["submission_id"]),
+                final_user_label=user_label,
+            )
+            feedback_state[feedback_state_key] = user_label
+            if hasattr(st, "toast"):
+                st.toast("Feedback saved")
+            else:
+                st.success("Feedback saved")
+
+        if feedback_state.get(feedback_state_key) is not None:
+            if feedback_state[feedback_state_key]:
+                st.caption("Feedback: marked as correct manipulation.")
+            else:
+                st.caption("Feedback: marked as not manipulation.")
+
+elif st.session_state.page == "contact":
     st.markdown("## 📩 Contact")
     st.markdown(
         """
@@ -1189,4 +1510,5 @@ elif st.session_state.page == "terminology":
         - [PubMed: Gaslighting and mental health](https://pubmed.ncbi.nlm.nih.gov/38115535/)
         """
     )
+
 
