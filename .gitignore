@@ -2,3 +2,5 @@
 analysis.json
 report.txt
 __pycache__/
+delulu.db
+delulu_metrics.log
